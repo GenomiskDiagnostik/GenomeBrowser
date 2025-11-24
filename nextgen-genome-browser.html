@@ -148,7 +148,7 @@ Inspirations (conceptual only, no code copied):
         <input id="end" type="number" value="43125482" min="2" />
       </div>
       <div class="flex" style="gap:6px; align-items:flex-end;">
-        <button id="load" class="primary">Load region</button>
+        <button id="load" class="primary">Load sequence</button>
         <button id="zoomIn" class="secondary">Zoom ×2</button>
         <button id="zoomOut" class="secondary">Zoom ÷2</button>
       </div>
@@ -162,6 +162,7 @@ Inspirations (conceptual only, no code copied):
   <main>
     <section id="browser">
       <div class="status" id="status">Ready.</div>
+      <div class="status" id="sequenceStatus" style="margin-top:8px;">No sequence loaded yet.</div>
       <div class="track-legend" style="margin: 12px 0;" id="legend"></div>
       <div class="svg-container">
         <svg id="genomeSvg" width="100%" height="420"></svg>
@@ -275,6 +276,19 @@ Inspirations (conceptual only, no code copied):
       statusEl.style.color = ok ? '#e6edf3' : 'var(--danger)';
     }
 
+    function updateSequenceStatus(seq, source='UCSC API') {
+      const box = $('#sequenceStatus');
+      if (!box) return;
+      if (!seq) {
+        box.textContent = 'Sequence unavailable for current region.';
+        box.style.color = 'var(--danger)';
+        return;
+      }
+      const preview = seq.slice(0, 60).toUpperCase();
+      box.textContent = `Loaded ${seq.length.toLocaleString()} bp (${source}). Preview: ${preview}${seq.length > 60 ? '…' : ''}`;
+      box.style.color = '#e6edf3';
+    }
+
     function regionUrl() {
       const {assembly, chrom, start, end} = state;
       return `https://genome.ucsc.edu/cgi-bin/hgTracks?db=${encodeURIComponent(assembly)}&position=${encodeURIComponent(chrom)}:${start}-${end}`;
@@ -331,13 +345,13 @@ Inspirations (conceptual only, no code copied):
       const url = `https://api.genome.ucsc.edu/getData/sequence?genome=${encodeURIComponent(assembly)};chrom=${encodeURIComponent(chrom)};start=${Math.floor(start)};end=${Math.floor(end)}`;
       try {
         const json = await fetchJSON(url);
-        const seq = json.sequence || '';
+        const seq = json.sequence || json?.dna?.dna || '';
         if (!seq) throw new Error('Empty sequence');
-        return seq;
+        return { sequence: seq, source: 'UCSC API' };
       } catch (err) {
         console.warn('Sequence fetch failed', err);
         updateStatus('Sequence unavailable from UCSC. Showing demo bases.', false);
-        return fallbackSequence(Math.min(20000, Math.max(200, state.end - state.start)));
+        return { sequence: fallbackSequence(Math.min(20000, Math.max(200, state.end - state.start))), source: 'offline demo' };
       }
     }
 
@@ -505,8 +519,8 @@ Inspirations (conceptual only, no code copied):
 
     async function loadRegionData() {
       // Fetch sequence and gene data concurrently to minimise waiting time
-      const [sequence, genes] = await Promise.all([fetchSequence(), fetchGenes()]);
-      return { sequence, genes };
+      const [sequenceResult, genes] = await Promise.all([fetchSequence(), fetchGenes()]);
+      return { sequenceResult, genes };
     }
 
     async function render() {
@@ -532,15 +546,21 @@ Inspirations (conceptual only, no code copied):
 
       let sequence = '';
       let genes = [];
+      let sequenceSource = '';
 
       try {
         const needsSequence = activeTracks.some(t => ['gc','sequence'].includes(t.type));
         const needsGenes = activeTracks.some(t => t.type === 'genes');
         if (needsSequence || needsGenes) {
           const region = await loadRegionData();
-          sequence = needsSequence ? region.sequence : '';
+          if (needsSequence) {
+            sequence = region.sequenceResult?.sequence || '';
+            sequenceSource = region.sequenceResult?.source || 'UCSC API';
+          }
           genes = needsGenes ? region.genes : [];
         }
+
+        updateSequenceStatus(needsSequence ? sequence : '', sequenceSource || 'UCSC API');
 
         for (const track of activeTracks) {
           const g = svg.selectAll('g.track').filter(d => d.id === track.id);
@@ -559,6 +579,7 @@ Inspirations (conceptual only, no code copied):
       } catch (err) {
         console.error('Render failed', err);
         updateStatus('Render error: ' + err.message, false);
+        updateSequenceStatus('', '');
       }
       renderTrackList();
     }
