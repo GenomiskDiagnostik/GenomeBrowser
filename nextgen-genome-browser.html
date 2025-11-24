@@ -340,14 +340,23 @@ Inspirations (conceptual only, no code copied):
       return seq;
     }
 
+    function extractSequencePayload(json) {
+      if (!json || typeof json !== 'object') return '';
+      if (typeof json.sequence === 'string') return json.sequence;
+      if (typeof json.dna === 'string') return json.dna;
+      if (json.dna && typeof json.dna === 'object' && typeof json.dna.dna === 'string') return json.dna.dna;
+      return '';
+    }
+
     async function fetchSequence() {
       const {assembly, chrom, start, end} = state;
       const url = `https://api.genome.ucsc.edu/getData/sequence?genome=${encodeURIComponent(assembly)};chrom=${encodeURIComponent(chrom)};start=${Math.floor(start)};end=${Math.floor(end)}`;
       try {
         const json = await fetchJSON(url);
-        const seq = json.sequence || json?.dna?.dna || '';
-        if (!seq) throw new Error('Empty sequence');
-        return { sequence: seq, source: 'UCSC API' };
+        const seq = extractSequencePayload(json);
+        if (!seq) throw new Error('Empty sequence payload');
+        updateStatus('Region loaded from UCSC REST.', true);
+        return { sequence: seq, source: 'UCSC REST' };
       } catch (err) {
         console.warn('Sequence fetch failed', err);
         updateStatus('Sequence unavailable from UCSC. Showing demo bases.', false);
@@ -355,21 +364,27 @@ Inspirations (conceptual only, no code copied):
       }
     }
 
+    function normalizeGeneRecords(raw) {
+      if (!Array.isArray(raw)) return [];
+      return raw.map(g => ({
+        name: g.name2 || g.name || 'gene',
+        start: Number(g.txStart),
+        end: Number(g.txEnd),
+        strand: g.strand,
+        exons: g.exonStarts?.split(',').filter(Boolean).map(Number).map((s, i) => {
+          const e = Number(g.exonEnds?.split(',')[i]);
+          return { start: s, end: e };
+        }) || []
+      })).filter(g => Number.isFinite(g.start) && Number.isFinite(g.end));
+    }
+
     async function fetchGenes() {
       const {assembly, chrom, start, end} = state;
       const url = `https://api.genome.ucsc.edu/getData/track?genome=${encodeURIComponent(assembly)};track=refGene;chrom=${encodeURIComponent(chrom)};start=${Math.floor(start)};end=${Math.floor(end)}`;
       try {
         const json = await fetchJSON(url);
-        const records = (json?.refGene || []).map(g => ({
-          name: g.name2 || g.name || 'gene',
-          start: g.txStart,
-          end: g.txEnd,
-          strand: g.strand,
-          exons: g.exonStarts?.split(',').filter(Boolean).map(Number).map((s, i) => {
-            const e = Number(g.exonEnds?.split(',')[i]);
-            return { start: s, end: e };
-          }) || []
-        })).filter(g => Number.isFinite(g.start) && Number.isFinite(g.end));
+        const rows = json?.refGene || json?.track?.refGene || [];
+        const records = normalizeGeneRecords(rows);
         if (!records.length) throw new Error('No refGene rows');
         return records;
       } catch (err) {
