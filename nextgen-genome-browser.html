@@ -1,0 +1,578 @@
+<!--
+Next-Gen Genome Browser (D3.js)
+Dependencies:
+- D3.js (via CDN, permissive license – see https://github.com/d3/d3)
+Inspirations (conceptual only, no code copied):
+- igv.js (MIT)
+- Dalliance/Biodalliance (BSD-2-Clause)
+- pileup.js (Apache-2.0)
+- UCSC Genome Browser (non-commercial open-source server stack; this file uses only public web URLs & REST API).
+-->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Next-Gen Genome Browser (D3.js)</title>
+  <link rel="preconnect" href="https://cdn.jsdelivr.net" />
+  <script src="https://cdn.jsdelivr.net/npm/d3@7"></script>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #0e1117;
+      --panel: #161b22;
+      --accent: #58a6ff;
+      --muted: #8b949e;
+      --border: #30363d;
+      --danger: #ff6b6b;
+      --success: #2ea043;
+      --track-height: 80px;
+      font-family: 'Inter', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: #e6edf3;
+      display: flex;
+      flex-direction: column;
+      min-height: 100vh;
+    }
+    header {
+      padding: 12px 16px;
+      background: var(--panel);
+      border-bottom: 1px solid var(--border);
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+    }
+    h1 {
+      margin: 0;
+      font-size: 18px;
+      letter-spacing: 0.5px;
+    }
+    .subtitle {
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .controls {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+      gap: 8px;
+      align-items: center;
+    }
+    label {
+      font-size: 12px;
+      color: var(--muted);
+      display: block;
+      margin-bottom: 4px;
+    }
+    input, select, button, textarea {
+      width: 100%;
+      box-sizing: border-box;
+      padding: 8px;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      background: #0d1117;
+      color: #e6edf3;
+      font-size: 13px;
+    }
+    button {
+      cursor: pointer;
+      border: 1px solid var(--border);
+      transition: all 0.2s ease;
+    }
+    button.primary { background: linear-gradient(120deg, var(--accent), #6aa6ff); color: #0b1220; font-weight: 700; }
+    button:hover { border-color: var(--accent); box-shadow: 0 0 0 2px #58a6ff33; }
+    button.danger { background: #2d1115; color: var(--danger); }
+    button.secondary { background: #111820; color: #d0d7de; }
+    main { flex: 1; display: grid; grid-template-columns: minmax(0, 3fr) 320px; }
+    #browser { padding: 16px; overflow: auto; }
+    #tracks { background: var(--panel); border-left: 1px solid var(--border); padding: 16px; display: flex; flex-direction: column; gap: 16px; }
+    .panel { background: #0d1117; border: 1px solid var(--border); border-radius: 12px; padding: 12px; box-shadow: 0 10px 30px #00000025; }
+    .panel h2 { margin: 0 0 8px 0; font-size: 14px; }
+    .panel small { color: var(--muted); }
+    .track-row { display: flex; align-items: center; justify-content: space-between; padding: 6px 0; border-bottom: 1px dashed var(--border); }
+    .pill { padding: 4px 8px; border-radius: 999px; background: #111820; border: 1px solid var(--border); font-size: 12px; }
+    .svg-container { background: #0d1117; border: 1px solid var(--border); border-radius: 12px; padding: 12px; box-shadow: inset 0 1px 0 #ffffff05; }
+    .axis path, .axis line { stroke: #475569; }
+    .axis text { fill: #e6edf3; font-size: 11px; }
+    .badge { font-size: 11px; color: var(--muted); }
+    .link { color: var(--accent); text-decoration: none; }
+    .flex { display: flex; gap: 8px; align-items: center; }
+    .grid { display: grid; gap: 8px; }
+    .grid.two { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .status { padding: 8px; border-radius: 8px; background: #111820; border: 1px solid var(--border); font-size: 13px; min-height: 32px; }
+    .code { font-family: "SFMono-Regular", Menlo, Consolas, monospace; background: #111820; padding: 2px 6px; border-radius: 6px; border: 1px solid var(--border); }
+    .muted { color: var(--muted); }
+    .track-legend { display: flex; gap: 8px; flex-wrap: wrap; }
+    .legend-item { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; background: #111820; border: 1px solid var(--border); padding: 6px 8px; border-radius: 8px; }
+    .legend-swatch { width: 12px; height: 12px; border-radius: 4px; }
+    .monospace { font-family: 'SFMono-Regular', Menlo, Consolas, monospace; }
+    textarea { min-height: 80px; resize: vertical; }
+    @media (max-width: 960px) {
+      main { grid-template-columns: 1fr; }
+      header { grid-template-columns: 1fr; }
+      #tracks { border-left: none; border-top: 1px solid var(--border); }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div>
+      <h1>Next-Gen Genome Browser</h1>
+      <div class="subtitle">D3.js-first overlay for UCSC Genome Browser · Modern pan/zoom tracks</div>
+      <div class="flex" style="margin-top: 6px; flex-wrap: wrap; gap: 6px;">
+        <span class="badge">Standalone HTML</span>
+        <span class="badge">D3 v7</span>
+        <a class="link" id="ucscLink" target="_blank" rel="noopener">Open in UCSC</a>
+      </div>
+    </div>
+    <div class="controls">
+      <div>
+        <label for="assembly">Assembly</label>
+        <select id="assembly">
+          <option value="hg38">hg38</option>
+          <option value="hg19">hg19</option>
+        </select>
+      </div>
+      <div>
+        <label for="chrom">Chromosome</label>
+        <input id="chrom" value="chr17" />
+      </div>
+      <div>
+        <label for="start">Start</label>
+        <input id="start" type="number" value="43044293" min="1" />
+      </div>
+      <div>
+        <label for="end">End</label>
+        <input id="end" type="number" value="43125482" min="2" />
+      </div>
+      <div class="flex" style="gap:6px; align-items:flex-end;">
+        <button id="load" class="primary">Load region</button>
+        <button id="zoomIn" class="secondary">Zoom ×2</button>
+        <button id="zoomOut" class="secondary">Zoom ÷2</button>
+      </div>
+      <div class="flex" style="gap:6px; align-items:flex-end;">
+        <button id="panLeft" class="secondary">Pan ◀︎</button>
+        <button id="panRight" class="secondary">Pan ▶︎</button>
+      </div>
+    </div>
+  </header>
+
+  <main>
+    <section id="browser">
+      <div class="status" id="status">Ready.</div>
+      <div class="track-legend" style="margin: 12px 0;" id="legend"></div>
+      <div class="svg-container">
+        <svg id="genomeSvg" width="100%" height="420"></svg>
+      </div>
+      <p class="muted" style="margin-top: 8px;">Tip: pan/zoom using the controls above. Data fetched from UCSC REST API with graceful degradation and offline demo tracks.</p>
+    </section>
+    <aside id="tracks">
+      <div class="panel">
+        <h2>Track library</h2>
+        <small>Toggle or remove tracks. Tracks persist in browser storage.</small>
+        <div id="trackList"></div>
+      </div>
+      <div class="panel">
+        <h2>Add custom track</h2>
+        <small>Provide a JSON URL that returns an array of {name,start,end,strand,color}.</small>
+        <div class="grid">
+          <div>
+            <label>Track name</label>
+            <input id="customName" placeholder="My variants" />
+          </div>
+          <div>
+            <label>JSON URL (CORS-enabled)</label>
+            <input id="customUrl" placeholder="https://example.com/track.json" />
+          </div>
+          <div>
+            <label>Color</label>
+            <input id="customColor" type="color" value="#f472b6" />
+          </div>
+          <button id="addTrack" class="primary">Add track</button>
+        </div>
+        <small>Sample payload: <span class="code">[{"name":"variant1","start":43050000,"end":43050500,"strand":"+"}]</span></small>
+      </div>
+      <div class="panel">
+        <h2>Keyboard shortcuts</h2>
+        <ul class="muted" style="padding-left: 16px; margin: 0;">
+          <li><span class="code">[</span> pan left, <span class="code">]</span> pan right</li>
+          <li><span class="code">-</span> zoom out, <span class="code">=</span> zoom in</li>
+          <li><span class="code">g</span> reload region</li>
+        </ul>
+      </div>
+    </aside>
+  </main>
+
+  <script>
+    // Utility: debounce to avoid excessive renders
+    const debounce = (fn, wait=200) => {
+      let t; return (...args) => { clearTimeout(t); t = setTimeout(() => fn(...args), wait); };
+    };
+
+    const $ = (id) => document.getElementById(id);
+
+    const state = {
+      assembly: 'hg38',
+      chrom: 'chr17',
+      start: 43044293,
+      end: 43125482,
+      tracks: []
+    };
+
+    const colors = {
+      gc: '#2dd4bf',
+      seq: '#fbbf24',
+      gene: '#60a5fa',
+      custom: '#f472b6'
+    };
+
+    // Track registry
+    const builtInTracks = [
+      { id: 'gc', name: 'GC content', type: 'gc', color: colors.gc, enabled: true },
+      { id: 'sequence', name: 'Reference sequence', type: 'sequence', color: colors.seq, enabled: true },
+      { id: 'genes', name: 'Gene models (refGene)', type: 'genes', color: colors.gene, enabled: true }
+    ];
+
+    function loadPersistedTracks() {
+      try {
+        const stored = localStorage.getItem('nextgen-tracks');
+        return stored ? JSON.parse(stored) : [];
+      } catch (e) {
+        console.warn('Unable to parse stored tracks', e);
+        return [];
+      }
+    }
+
+    function persistTracks(tracks) {
+      localStorage.setItem('nextgen-tracks', JSON.stringify(tracks));
+    }
+
+    state.tracks = [...builtInTracks, ...loadPersistedTracks()];
+
+    const svg = d3.select('#genomeSvg');
+    const width = () => svg.node().getBoundingClientRect().width - 40;
+
+    const axisHeight = 30;
+    const trackHeight = 80;
+    const trackGap = 10;
+
+    const statusEl = $('#status');
+
+    function updateStatus(msg, ok=true) {
+      statusEl.textContent = msg;
+      statusEl.style.borderColor = ok ? 'var(--border)' : 'var(--danger)';
+      statusEl.style.color = ok ? '#e6edf3' : 'var(--danger)';
+    }
+
+    function regionUrl() {
+      const {assembly, chrom, start, end} = state;
+      return `https://genome.ucsc.edu/cgi-bin/hgTracks?db=${encodeURIComponent(assembly)}&position=${encodeURIComponent(chrom)}:${start}-${end}`;
+    }
+
+    function updateUcscLink() {
+      const link = $('#ucscLink');
+      link.href = regionUrl();
+      link.textContent = 'Open in UCSC (' + state.assembly + ')';
+    }
+
+    function setInputs() {
+      $('#assembly').value = state.assembly;
+      $('#chrom').value = state.chrom;
+      $('#start').value = state.start;
+      $('#end').value = state.end;
+    }
+
+    function clampRegion() {
+      if (state.start < 1) state.start = 1;
+      if (state.end <= state.start) state.end = state.start + 1;
+    }
+
+    function bpPerPixel() {
+      return (state.end - state.start) / width();
+    }
+
+    function scaleX() {
+      return d3.scaleLinear().domain([state.start, state.end]).range([20, width()+20]);
+    }
+
+    async function fetchJSON(url, timeoutMs=8000) {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), timeoutMs);
+      const res = await fetch(url, { signal: controller.signal });
+      clearTimeout(timer);
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      return res.json();
+    }
+
+    async function fetchSequence() {
+      const {assembly, chrom, start, end} = state;
+      const url = `https://api.genome.ucsc.edu/getData/sequence?genome=${assembly};chrom=${chrom};start=${start};end=${end}`;
+      try {
+        const json = await fetchJSON(url);
+        return json.sequence || '';
+      } catch (err) {
+        console.warn('Sequence fetch failed', err);
+        return '';
+      }
+    }
+
+    async function fetchGenes() {
+      const {assembly, chrom, start, end} = state;
+      const url = `https://api.genome.ucsc.edu/getData/track?genome=${assembly};track=refGene;chrom=${chrom};start=${start};end=${end}`;
+      try {
+        const json = await fetchJSON(url);
+        const records = (json?.refGene || []).map(g => ({
+          name: g.name2 || g.name || 'gene',
+          start: g.txStart,
+          end: g.txEnd,
+          strand: g.strand,
+          exons: g.exonStarts?.split(',').filter(Boolean).map(Number).map((s, i) => {
+            const e = Number(g.exonEnds?.split(',')[i]);
+            return { start: s, end: e };
+          }) || []
+        }));
+        return records;
+      } catch (err) {
+        console.warn('Gene fetch failed', err);
+        return [];
+      }
+    }
+
+    function computeGC(sequence, window=50) {
+      if (!sequence) return [];
+      const values = [];
+      for (let i=0; i<sequence.length; i+=window) {
+        const slice = sequence.slice(i, i+window);
+        const gc = (slice.match(/[GCgc]/g) || []).length / slice.length;
+        values.push({ start: state.start + i, end: state.start + i + slice.length, gc });
+      }
+      return values;
+    }
+
+    function drawAxis(x) {
+      const axis = d3.axisTop(x).ticks(8).tickFormat(d3.format(',d'));
+      svg.selectAll('.axis').remove();
+      svg.append('g').attr('class','axis').attr('transform', `translate(0, ${axisHeight})`).call(axis);
+      svg.selectAll('.axis text').style('fill', '#e6edf3');
+    }
+
+    function drawLegend() {
+      const legend = d3.select('#legend');
+      const data = state.tracks.filter(t => t.enabled !== false);
+      const items = legend.selectAll('.legend-item').data(data, d => d.id);
+      const enter = items.enter().append('div').attr('class', 'legend-item');
+      enter.append('div').attr('class','legend-swatch').style('background', d => d.color || colors.custom);
+      enter.append('span').text(d => d.name);
+      items.exit().remove();
+    }
+
+    function drawGC(group, data, x) {
+      const yScale = d3.scaleLinear().domain([0,1]).range([trackHeight-20, 10]);
+      group.selectAll('*').remove();
+      group.append('text').attr('x', 4).attr('y', 12).attr('fill', '#94a3b8').text('GC content');
+      const area = d3.area()
+        .x(d => x((d.start + d.end)/2))
+        .y0(yScale(0))
+        .y1(d => yScale(d.gc))
+        .curve(d3.curveMonotoneX);
+      group.append('path').datum(data).attr('fill', '#2dd4bf55').attr('stroke', colors.gc).attr('stroke-width', 1.2).attr('d', area);
+      group.append('g').call(d3.axisLeft(yScale).ticks(3).tickFormat(d3.format('.0%'))).selectAll('text').style('fill', '#94a3b8');
+    }
+
+    function drawSequence(group, seq, x) {
+      group.selectAll('*').remove();
+      group.append('text').attr('x', 4).attr('y', 12).attr('fill', '#94a3b8').text('Reference sequence');
+      const letters = seq.split('').map((base, idx) => ({ base, pos: state.start + idx }));
+      const scale = x;
+      const y = 30;
+      const unit = Math.max(1, bpPerPixel());
+      const displayEvery = unit > 8 ? Math.ceil(unit/4) : 1;
+      const nodes = group.selectAll('text.base').data(letters.filter((_,i)=> i % displayEvery === 0), d => d.pos);
+      nodes.enter().append('text')
+        .attr('class','base')
+        .attr('x', d => scale(d.pos))
+        .attr('y', y)
+        .attr('fill', d => ({A:'#fbbf24',C:'#60a5fa',G:'#10b981',T:'#f472b6',N:'#94a3b8'}[d.base.toUpperCase()] || '#e6edf3'))
+        .attr('font-size', 12)
+        .text(d => d.base.toUpperCase());
+    }
+
+    function drawGenes(group, genes, x) {
+      group.selectAll('*').remove();
+      group.append('text').attr('x', 4).attr('y', 12).attr('fill', '#94a3b8').text('refGene');
+      const geneHeight = 14;
+      const laneHeight = 18;
+      genes.forEach((g, i) => {
+        const y = 20 + i * laneHeight;
+        group.append('rect').attr('x', x(g.start)).attr('y', y - geneHeight/2).attr('height', geneHeight).attr('width', Math.max(2, x(g.end)-x(g.start))).attr('fill', '#60a5fa55').attr('stroke', colors.gene);
+        g.exons?.forEach(exon => {
+          group.append('rect').attr('x', x(exon.start)).attr('y', y - geneHeight/2).attr('height', geneHeight).attr('width', Math.max(2, x(exon.end)-x(exon.start))).attr('fill', colors.gene);
+        });
+        group.append('text').attr('x', x(g.start)).attr('y', y - 8).attr('fill', '#e6edf3').attr('font-size', 11).text(g.name);
+      });
+    }
+
+    function drawCustom(group, features, x, color) {
+      group.selectAll('*').remove();
+      group.append('text').attr('x', 4).attr('y', 12).attr('fill', '#94a3b8').text('Custom track');
+      const laneHeight = 16;
+      features.forEach((f, i) => {
+        const y = 20 + i * laneHeight;
+        group.append('rect').attr('x', x(f.start)).attr('y', y - 6).attr('height', 12).attr('width', Math.max(2, x(f.end)-x(f.start))).attr('fill', (f.color || color || colors.custom)+'88').attr('stroke', f.color || color || colors.custom);
+        group.append('text').attr('x', x(f.start)).attr('y', y - 8).attr('fill', '#e6edf3').attr('font-size', 11).text(f.name || 'feat');
+      });
+    }
+
+    async function loadCustomTrack(track) {
+      if (!track.url) return track.data || [];
+      try {
+        const data = await fetchJSON(track.url);
+        if (!Array.isArray(data)) throw new Error('Track payload must be array');
+        return data.map(d => ({
+          name: String(d.name || 'item'),
+          start: Number(d.start),
+          end: Number(d.end),
+          strand: d.strand || '.',
+          color: d.color
+        })).filter(d => !Number.isNaN(d.start) && !Number.isNaN(d.end));
+      } catch (err) {
+        console.warn('Custom track failed', err);
+        return track.data || [];
+      }
+    }
+
+    async function render() {
+      clampRegion();
+      setInputs();
+      updateUcscLink();
+      updateStatus('Loading region…');
+      const x = scaleX();
+      drawAxis(x);
+      drawLegend();
+
+      // Prepare track slots
+      const activeTracks = state.tracks.filter(t => t.enabled !== false);
+      const totalHeight = axisHeight + (trackHeight + trackGap) * activeTracks.length + 40;
+      svg.attr('height', totalHeight);
+
+      const groups = svg.selectAll('g.track').data(activeTracks, d => d.id);
+      const enter = groups.enter().append('g').attr('class','track').attr('transform', (d,i) => `translate(0, ${axisHeight + 20 + i*(trackHeight+trackGap)})`);
+      groups.exit().remove();
+
+      let sequence = '';
+      let genes = [];
+
+      for (const [i, track] of activeTracks.entries()) {
+        const g = svg.selectAll('g.track').filter(d => d.id === track.id);
+        if (track.type === 'gc') {
+          if (!sequence) sequence = await fetchSequence();
+          drawGC(g, computeGC(sequence), x);
+        } else if (track.type === 'sequence') {
+          if (!sequence) sequence = await fetchSequence();
+          drawSequence(g, sequence || 'N'.repeat(Math.min(120, state.end - state.start)), x);
+        } else if (track.type === 'genes') {
+          if (!genes.length) genes = await fetchGenes();
+          drawGenes(g, genes.length ? genes : fallbackGenes(), x);
+        } else if (track.type === 'custom') {
+          const data = await loadCustomTrack(track);
+          drawCustom(g, data, x, track.color);
+        }
+      }
+
+      updateStatus('Region loaded: ' + state.chrom + ':' + state.start + '-' + state.end);
+      renderTrackList();
+    }
+
+    function fallbackGenes() {
+      // Provide stable demo genes for offline use
+      return [
+        { name: 'BRCA1', start: state.start + 1000, end: state.start + 6000, strand: '+', exons: [{start: state.start+1000, end: state.start+1300}, {start: state.start+3000, end: state.start+3600}, {start: state.start+5200, end: state.start+5600}] },
+        { name: 'NBR1', start: state.start + 7000, end: state.start + 12000, strand: '-', exons: [{start: state.start+7000, end: state.start+7500}, {start: state.start+9000, end: state.start+9300}, {start: state.start+11300, end: state.start+11800}] }
+      ];
+    }
+
+    function renderTrackList() {
+      const container = d3.select('#trackList');
+      const tracks = container.selectAll('.track-row').data(state.tracks, d => d.id);
+      const enter = tracks.enter().append('div').attr('class','track-row');
+      const left = enter.append('div');
+      left.append('div').text(d => d.name);
+      left.append('div').attr('class','muted monospace').text(d => d.type);
+      const actions = enter.append('div').attr('class','flex');
+      actions.append('input').attr('type','checkbox').property('checked', d => d.enabled !== false).on('change', (_, d) => { d.enabled = !d.enabled; persistTracks(state.tracks.filter(t => t.type==='custom')); render(); });
+      actions.append('button').attr('class','secondary').text('Remove').style('display', d => d.type==='custom' ? 'inline-flex' : 'none').on('click', (_, d) => {
+        state.tracks = state.tracks.filter(t => t.id !== d.id);
+        persistTracks(state.tracks.filter(t => t.type==='custom'));
+        render();
+      });
+      tracks.exit().remove();
+    }
+
+    function parseInputs() {
+      state.assembly = $('#assembly').value;
+      state.chrom = $('#chrom').value.trim();
+      state.start = Number($('#start').value);
+      state.end = Number($('#end').value);
+      clampRegion();
+    }
+
+    async function addCustomTrack() {
+      const name = $('#customName').value.trim() || 'Custom track';
+      const url = $('#customUrl').value.trim();
+      const color = $('#customColor').value;
+      const id = 'custom-' + Math.random().toString(36).slice(2,7);
+      const track = { id, name, type: 'custom', url, color, enabled: true };
+      state.tracks.push(track);
+      persistTracks(state.tracks.filter(t => t.type==='custom'));
+      renderTrackList();
+      render();
+    }
+
+    function zoom(factor) {
+      const center = (state.start + state.end) / 2;
+      const span = (state.end - state.start) / factor;
+      state.start = Math.max(1, Math.round(center - span/2));
+      state.end = Math.round(center + span/2);
+      render();
+    }
+
+    function pan(direction=1) { // direction: +1 right, -1 left
+      const span = state.end - state.start;
+      const shift = Math.max(1, Math.round(span * 0.2)) * direction;
+      state.start = Math.max(1, state.start + shift);
+      state.end = state.end + shift;
+      render();
+    }
+
+    // Bind UI events
+    $('#load').addEventListener('click', () => { parseInputs(); render(); });
+    $('#zoomIn').addEventListener('click', () => zoom(2));
+    $('#zoomOut').addEventListener('click', () => zoom(0.5));
+    $('#panLeft').addEventListener('click', () => pan(-1));
+    $('#panRight').addEventListener('click', () => pan(1));
+    $('#addTrack').addEventListener('click', addCustomTrack);
+
+    document.addEventListener('keydown', (e) => {
+      if (['INPUT','TEXTAREA','SELECT'].includes(e.target.tagName)) return;
+      if (e.key === '[') pan(-1);
+      if (e.key === ']') pan(1);
+      if (e.key === '-') zoom(0.5);
+      if (e.key === '=') zoom(2);
+      if (e.key.toLowerCase() === 'g') { parseInputs(); render(); }
+    });
+
+    window.addEventListener('resize', debounce(() => render(), 200));
+
+    // Initial render
+    (function init() {
+      const persisted = loadPersistedTracks();
+      if (persisted.length) state.tracks = [...builtInTracks, ...persisted];
+      setInputs();
+      updateUcscLink();
+      render();
+    })();
+  </script>
+</body>
+</html>
