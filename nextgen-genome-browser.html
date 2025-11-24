@@ -82,7 +82,7 @@
     @media (max-width: 960px) { main { grid-template-columns: 1fr; } header { grid-template-columns: 1fr; } #sidebar { order: -1; } }
   </style>
 </head>
-<body>
+<body data-theme="dark">
   <header>
     <div>
       <h1>Next-Gen Genome Browser</h1>
@@ -120,7 +120,6 @@
       </div>
     </div>
   </header>
-
   <main>
     <section id="viewer">
       <div class="panel" id="statusPanel">
@@ -155,7 +154,7 @@
           </div>
           <div>
             <label>Color</label>
-            <input id="customColor" type="color" value="#f472b6" />
+            <input id="customColor" type="color" value="#f97316" />
           </div>
           <div>
             <label>Paste data</label>
@@ -170,7 +169,21 @@
         </div>
       </div>
     </aside>
+    <section class="browser">
+      <div id="status" class="panel" style="border-style:dashed;">Ready.</div>
+      <div class="svg-shell">
+        <div class="legend" id="legend"></div>
+        <svg id="browserSvg" width="100%" height="520"></svg>
+        <div class="muted" style="font-size:12px;">Drag to pan, scroll to zoom. Click features for details.</div>
+      </div>
+    </section>
   </main>
+  <div class="status-bar" id="statusBar">
+    <div>Assembly: <strong id="statusAssembly">hg38</strong></div>
+    <div>Region: <strong id="statusRegion">chr17:43000000-43100000</strong></div>
+    <div>Scale: <strong id="statusScale">?</strong></div>
+    <div id="hint" class="muted">Hover for details. Tracks persist in localStorage.</div>
+  </div>
 
   <div class="statusbar" id="statusBar"></div>
 
