@@ -430,12 +430,17 @@
     }
 
     function parseRegionInput(str) {
-      if (!str) return null;
+      if (!str || !str.trim()) return null;
       const trimmed = str.trim();
-      if (geneAliases[trimmed]) return { ...geneAliases[trimmed] };
-      const match = trimmed.match(/^(chr\w+):(\d+)-(\d+)$/i);
+      const cleaned = trimmed.replace(/,/g, '');
+      const alias = geneAliases[trimmed.toUpperCase()];
+      if (alias) return { ...alias };
+      const match = cleaned.match(/^(chr[\w]+)\s*:\s*([\d]+)\s*-\s*([\d]+)$/i);
       if (match) {
-        return { chrom: match[1], start: Number(match[2]), end: Number(match[3]) };
+        const start = Number(match[2]);
+        const end = Number(match[3]);
+        if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return null;
+        return { chrom: match[1], start, end };
       }
       return null;
     }
@@ -700,7 +705,8 @@
     }
 
     function setRegionFromInput(str) {
-      const parsed = parseRegionInput(str);
+      const value = str && str.trim() ? str : `${state.chrom}:${state.start}-${state.end}`;
+      const parsed = parseRegionInput(value);
       if (!parsed) {
         updateStatus('Invalid input. Use gene alias or chr:start-end.', false);
         return;
@@ -709,6 +715,8 @@
       state.start = parsed.start || state.start;
       state.end = parsed.end || state.end;
       if (parsed.assembly) state.assembly = parsed.assembly;
+      document.getElementById('search').value = `${state.chrom}:${state.start}-${state.end}`;
+      updateStatus('Region updated', true);
       renderAll();
     }
 
