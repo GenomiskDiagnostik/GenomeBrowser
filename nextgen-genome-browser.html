@@ -294,6 +294,8 @@ Inspirations (conceptual only, no code copied):
     }
 
     function clampRegion() {
+      if (!Number.isFinite(state.start)) state.start = 1;
+      if (!Number.isFinite(state.end)) state.end = state.start + 1;
       if (state.start < 1) state.start = 1;
       if (state.end <= state.start) state.end = state.start + 1;
     }
@@ -312,7 +314,9 @@ Inspirations (conceptual only, no code copied):
       const res = await fetch(url, { signal: controller.signal });
       clearTimeout(timer);
       if (!res.ok) throw new Error('HTTP ' + res.status);
-      return res.json();
+      const json = await res.json();
+      if (json == null || typeof json !== 'object') throw new Error('Invalid JSON payload');
+      return json;
     }
 
     function fallbackSequence(len) {
@@ -324,7 +328,7 @@ Inspirations (conceptual only, no code copied):
 
     async function fetchSequence() {
       const {assembly, chrom, start, end} = state;
-      const url = `https://api.genome.ucsc.edu/getData/sequence?genome=${assembly};chrom=${chrom};start=${start};end=${end}`;
+      const url = `https://api.genome.ucsc.edu/getData/sequence?genome=${encodeURIComponent(assembly)};chrom=${encodeURIComponent(chrom)};start=${Math.floor(start)};end=${Math.floor(end)}`;
       try {
         const json = await fetchJSON(url);
         const seq = json.sequence || '';
@@ -339,7 +343,7 @@ Inspirations (conceptual only, no code copied):
 
     async function fetchGenes() {
       const {assembly, chrom, start, end} = state;
-      const url = `https://api.genome.ucsc.edu/getData/track?genome=${assembly};track=refGene;chrom=${chrom};start=${start};end=${end}`;
+      const url = `https://api.genome.ucsc.edu/getData/track?genome=${encodeURIComponent(assembly)};track=refGene;chrom=${encodeURIComponent(chrom)};start=${Math.floor(start)};end=${Math.floor(end)}`;
       try {
         const json = await fetchJSON(url);
         const records = (json?.refGene || []).map(g => ({
@@ -351,7 +355,7 @@ Inspirations (conceptual only, no code copied):
             const e = Number(g.exonEnds?.split(',')[i]);
             return { start: s, end: e };
           }) || []
-        }));
+        })).filter(g => Number.isFinite(g.start) && Number.isFinite(g.end));
         if (!records.length) throw new Error('No refGene rows');
         return records;
       } catch (err) {
@@ -481,10 +485,12 @@ Inspirations (conceptual only, no code copied):
     }
 
     function normalizeFeature(d) {
+      const start = Number(d.start);
+      const end = Number(d.end);
       return {
         name: String(d.name || 'item'),
-        start: Number(d.start),
-        end: Number(d.end),
+        start: Number.isFinite(start) ? start : NaN,
+        end: Number.isFinite(end) ? end : NaN,
         strand: d.strand || '.',
         color: d.color
       };
@@ -492,7 +498,15 @@ Inspirations (conceptual only, no code copied):
 
     function normalizeFeatures(data) {
       if (!Array.isArray(data)) throw new Error('Track payload must be array');
-      return data.map(normalizeFeature).filter(d => !Number.isNaN(d.start) && !Number.isNaN(d.end));
+      return data
+        .map(normalizeFeature)
+        .filter(d => !Number.isNaN(d.start) && !Number.isNaN(d.end) && d.end > d.start);
+    }
+
+    async function loadRegionData() {
+      // Fetch sequence and gene data concurrently to minimise waiting time
+      const [sequence, genes] = await Promise.all([fetchSequence(), fetchGenes()]);
+      return { sequence, genes };
     }
 
     async function render() {
@@ -522,8 +536,11 @@ Inspirations (conceptual only, no code copied):
       try {
         const needsSequence = activeTracks.some(t => ['gc','sequence'].includes(t.type));
         const needsGenes = activeTracks.some(t => t.type === 'genes');
-        if (needsSequence) sequence = await fetchSequence();
-        if (needsGenes) genes = await fetchGenes();
+        if (needsSequence || needsGenes) {
+          const region = await loadRegionData();
+          sequence = needsSequence ? region.sequence : '';
+          genes = needsGenes ? region.genes : [];
+        }
 
         for (const track of activeTracks) {
           const g = svg.selectAll('g.track').filter(d => d.id === track.id);
