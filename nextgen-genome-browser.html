@@ -306,15 +306,25 @@ Inspirations (conceptual only, no code copied):
       return res.json();
     }
 
+    function fallbackSequence(len) {
+      const bases = ['A','C','G','T'];
+      let seq = '';
+      for (let i=0; i<len; i++) seq += bases[(state.start + i) % 4];
+      return seq;
+    }
+
     async function fetchSequence() {
       const {assembly, chrom, start, end} = state;
       const url = `https://api.genome.ucsc.edu/getData/sequence?genome=${assembly};chrom=${chrom};start=${start};end=${end}`;
       try {
         const json = await fetchJSON(url);
-        return json.sequence || '';
+        const seq = json.sequence || '';
+        if (!seq) throw new Error('Empty sequence');
+        return seq;
       } catch (err) {
         console.warn('Sequence fetch failed', err);
-        return '';
+        updateStatus('Sequence unavailable from UCSC. Showing demo bases.', false);
+        return fallbackSequence(Math.min(20000, Math.max(200, state.end - state.start)));
       }
     }
 
@@ -333,10 +343,12 @@ Inspirations (conceptual only, no code copied):
             return { start: s, end: e };
           }) || []
         }));
+        if (!records.length) throw new Error('No refGene rows');
         return records;
       } catch (err) {
         console.warn('Gene fetch failed', err);
-        return [];
+        updateStatus('refGene unavailable from UCSC. Showing demo genes.', false);
+        return fallbackGenes();
       }
     }
 
@@ -369,9 +381,13 @@ Inspirations (conceptual only, no code copied):
     }
 
     function drawGC(group, data, x) {
-      const yScale = d3.scaleLinear().domain([0,1]).range([trackHeight-20, 10]);
       group.selectAll('*').remove();
       group.append('text').attr('x', 4).attr('y', 12).attr('fill', '#94a3b8').text('GC content');
+      if (!data.length) {
+        group.append('text').attr('x', 4).attr('y', 30).attr('fill', '#eab308').text('No GC data available.');
+        return;
+      }
+      const yScale = d3.scaleLinear().domain([0,1]).range([trackHeight-20, 10]);
       const area = d3.area()
         .x(d => x((d.start + d.end)/2))
         .y0(yScale(0))
@@ -384,6 +400,10 @@ Inspirations (conceptual only, no code copied):
     function drawSequence(group, seq, x) {
       group.selectAll('*').remove();
       group.append('text').attr('x', 4).attr('y', 12).attr('fill', '#94a3b8').text('Reference sequence');
+      if (!seq) {
+        group.append('text').attr('x', 4).attr('y', 30).attr('fill', '#eab308').text('No sequence available.');
+        return;
+      }
       const letters = seq.split('').map((base, idx) => ({ base, pos: state.start + idx }));
       const scale = x;
       const y = 30;
@@ -402,6 +422,10 @@ Inspirations (conceptual only, no code copied):
     function drawGenes(group, genes, x) {
       group.selectAll('*').remove();
       group.append('text').attr('x', 4).attr('y', 12).attr('fill', '#94a3b8').text('refGene');
+      if (!genes.length) {
+        group.append('text').attr('x', 4).attr('y', 30).attr('fill', '#eab308').text('No gene models available.');
+        return;
+      }
       const geneHeight = 14;
       const laneHeight = 18;
       genes.forEach((g, i) => {
@@ -458,30 +482,37 @@ Inspirations (conceptual only, no code copied):
       svg.attr('height', totalHeight);
 
       const groups = svg.selectAll('g.track').data(activeTracks, d => d.id);
-      const enter = groups.enter().append('g').attr('class','track').attr('transform', (d,i) => `translate(0, ${axisHeight + 20 + i*(trackHeight+trackGap)})`);
+      const enter = groups.enter().append('g').attr('class','track');
+      enter.append('text'); // reserve space for consistency
+      const merged = enter.merge(groups);
+      merged.attr('transform', (d,i) => `translate(0, ${axisHeight + 20 + i*(trackHeight+trackGap)})`);
       groups.exit().remove();
 
       let sequence = '';
       let genes = [];
 
-      for (const [i, track] of activeTracks.entries()) {
-        const g = svg.selectAll('g.track').filter(d => d.id === track.id);
-        if (track.type === 'gc') {
-          if (!sequence) sequence = await fetchSequence();
-          drawGC(g, computeGC(sequence), x);
-        } else if (track.type === 'sequence') {
-          if (!sequence) sequence = await fetchSequence();
-          drawSequence(g, sequence || 'N'.repeat(Math.min(120, state.end - state.start)), x);
-        } else if (track.type === 'genes') {
-          if (!genes.length) genes = await fetchGenes();
-          drawGenes(g, genes.length ? genes : fallbackGenes(), x);
-        } else if (track.type === 'custom') {
-          const data = await loadCustomTrack(track);
-          drawCustom(g, data, x, track.color);
+      try {
+        for (const track of activeTracks) {
+          const g = svg.selectAll('g.track').filter(d => d.id === track.id);
+          if (track.type === 'gc') {
+            if (!sequence) sequence = await fetchSequence();
+            drawGC(g, computeGC(sequence), x);
+          } else if (track.type === 'sequence') {
+            if (!sequence) sequence = await fetchSequence();
+            drawSequence(g, sequence, x);
+          } else if (track.type === 'genes') {
+            if (!genes.length) genes = await fetchGenes();
+            drawGenes(g, genes, x);
+          } else if (track.type === 'custom') {
+            const data = await loadCustomTrack(track);
+            drawCustom(g, data, x, track.color);
+          }
         }
+        updateStatus('Region loaded: ' + state.chrom + ':' + state.start + '-' + state.end);
+      } catch (err) {
+        console.error('Render failed', err);
+        updateStatus('Render error: ' + err.message, false);
       }
-
-      updateStatus('Region loaded: ' + state.chrom + ':' + state.start + '-' + state.end);
       renderTrackList();
     }
 
@@ -498,15 +529,26 @@ Inspirations (conceptual only, no code copied):
       const tracks = container.selectAll('.track-row').data(state.tracks, d => d.id);
       const enter = tracks.enter().append('div').attr('class','track-row');
       const left = enter.append('div');
-      left.append('div').text(d => d.name);
-      left.append('div').attr('class','muted monospace').text(d => d.type);
+      left.append('div');
+      left.append('div').attr('class','muted monospace');
       const actions = enter.append('div').attr('class','flex');
-      actions.append('input').attr('type','checkbox').property('checked', d => d.enabled !== false).on('change', (_, d) => { d.enabled = !d.enabled; persistTracks(state.tracks.filter(t => t.type==='custom')); render(); });
-      actions.append('button').attr('class','secondary').text('Remove').style('display', d => d.type==='custom' ? 'inline-flex' : 'none').on('click', (_, d) => {
+      actions.append('input').attr('type','checkbox');
+      actions.append('button').attr('class','secondary').text('Remove');
+
+      const merged = enter.merge(tracks);
+      merged.select('div:first-child div:first-child').text(d => d.name);
+      merged.select('div:first-child div:nth-child(2)').text(d => d.type);
+      merged.select('input[type="checkbox"]').property('checked', d => d.enabled !== false).on('change', (event, d) => {
+        d.enabled = event.target.checked;
+        persistTracks(state.tracks.filter(t => t.type==='custom'));
+        render();
+      });
+      merged.select('button').style('display', d => d.type==='custom' ? 'inline-flex' : 'none').on('click', (_, d) => {
         state.tracks = state.tracks.filter(t => t.id !== d.id);
         persistTracks(state.tracks.filter(t => t.type==='custom'));
         render();
       });
+
       tracks.exit().remove();
     }
 
