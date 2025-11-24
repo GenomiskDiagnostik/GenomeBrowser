@@ -176,7 +176,7 @@ Inspirations (conceptual only, no code copied):
       </div>
       <div class="panel">
         <h2>Add custom track</h2>
-        <small>Provide a JSON URL that returns an array of {name,start,end,strand,color}.</small>
+        <small>Provide a JSON URL or inline JSON array of {name,start,end,strand,color}.</small>
         <div class="grid">
           <div>
             <label>Track name</label>
@@ -189,6 +189,10 @@ Inspirations (conceptual only, no code copied):
           <div>
             <label>Color</label>
             <input id="customColor" type="color" value="#f472b6" />
+          </div>
+          <div>
+            <label>Inline JSON (optional)</label>
+            <textarea id="customInline" placeholder='[{"name":"feat","start":1,"end":100}]'></textarea>
           </div>
           <button id="addTrack" class="primary">Add track</button>
         </div>
@@ -252,7 +256,12 @@ Inspirations (conceptual only, no code copied):
     state.tracks = [...builtInTracks, ...loadPersistedTracks()];
 
     const svg = d3.select('#genomeSvg');
-    const width = () => svg.node().getBoundingClientRect().width - 40;
+    const width = () => {
+      const node = svg.node();
+      const measured = node?.getBoundingClientRect?.().width || 0;
+      const fallback = node?.parentNode?.getBoundingClientRect?.().width || 960;
+      return Math.max(480, measured || fallback) - 40;
+    };
 
     const axisHeight = 30;
     const trackHeight = 80;
@@ -428,7 +437,7 @@ Inspirations (conceptual only, no code copied):
       }
       const geneHeight = 14;
       const laneHeight = 18;
-      genes.forEach((g, i) => {
+      genes.slice(0, 100).forEach((g, i) => { // cap to avoid runaway height
         const y = 20 + i * laneHeight;
         group.append('rect').attr('x', x(g.start)).attr('y', y - geneHeight/2).attr('height', geneHeight).attr('width', Math.max(2, x(g.end)-x(g.start))).attr('fill', '#60a5fa55').attr('stroke', colors.gene);
         g.exons?.forEach(exon => {
@@ -450,21 +459,40 @@ Inspirations (conceptual only, no code copied):
     }
 
     async function loadCustomTrack(track) {
-      if (!track.url) return track.data || [];
+      if (Array.isArray(track.data)) return track.data;
+      const inlineRaw = track.inline && track.inline.trim();
+      const parseArray = (raw) => {
+        const parsed = JSON.parse(raw);
+        if (!Array.isArray(parsed)) throw new Error('Track payload must be array');
+        return parsed;
+      };
       try {
+        if (inlineRaw) {
+          return parseArray(inlineRaw).map(normalizeFeature);
+        }
+        if (!track.url) return [];
         const data = await fetchJSON(track.url);
-        if (!Array.isArray(data)) throw new Error('Track payload must be array');
-        return data.map(d => ({
-          name: String(d.name || 'item'),
-          start: Number(d.start),
-          end: Number(d.end),
-          strand: d.strand || '.',
-          color: d.color
-        })).filter(d => !Number.isNaN(d.start) && !Number.isNaN(d.end));
+        return normalizeFeatures(data);
       } catch (err) {
         console.warn('Custom track failed', err);
-        return track.data || [];
+        updateStatus('Custom track failed to load: ' + err.message, false);
+        return [];
       }
+    }
+
+    function normalizeFeature(d) {
+      return {
+        name: String(d.name || 'item'),
+        start: Number(d.start),
+        end: Number(d.end),
+        strand: d.strand || '.',
+        color: d.color
+      };
+    }
+
+    function normalizeFeatures(data) {
+      if (!Array.isArray(data)) throw new Error('Track payload must be array');
+      return data.map(normalizeFeature).filter(d => !Number.isNaN(d.start) && !Number.isNaN(d.end));
     }
 
     async function render() {
@@ -492,16 +520,18 @@ Inspirations (conceptual only, no code copied):
       let genes = [];
 
       try {
+        const needsSequence = activeTracks.some(t => ['gc','sequence'].includes(t.type));
+        const needsGenes = activeTracks.some(t => t.type === 'genes');
+        if (needsSequence) sequence = await fetchSequence();
+        if (needsGenes) genes = await fetchGenes();
+
         for (const track of activeTracks) {
           const g = svg.selectAll('g.track').filter(d => d.id === track.id);
           if (track.type === 'gc') {
-            if (!sequence) sequence = await fetchSequence();
             drawGC(g, computeGC(sequence), x);
           } else if (track.type === 'sequence') {
-            if (!sequence) sequence = await fetchSequence();
             drawSequence(g, sequence, x);
           } else if (track.type === 'genes') {
-            if (!genes.length) genes = await fetchGenes();
             drawGenes(g, genes, x);
           } else if (track.type === 'custom') {
             const data = await loadCustomTrack(track);
@@ -563,9 +593,10 @@ Inspirations (conceptual only, no code copied):
     async function addCustomTrack() {
       const name = $('#customName').value.trim() || 'Custom track';
       const url = $('#customUrl').value.trim();
+      const inline = $('#customInline').value;
       const color = $('#customColor').value;
       const id = 'custom-' + Math.random().toString(36).slice(2,7);
-      const track = { id, name, type: 'custom', url, color, enabled: true };
+      const track = { id, name, type: 'custom', url, color, inline, enabled: true };
       state.tracks.push(track);
       persistTracks(state.tracks.filter(t => t.type==='custom'));
       renderTrackList();
