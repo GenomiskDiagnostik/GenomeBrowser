@@ -226,6 +226,7 @@
     ]);
 
     const state = loadState();
+    let currentTrackHeights = new Map();
 
     const svg = d3.select('#genomeSvg');
     const gContainer = svg.append('g').attr('class', 'tracks');
@@ -309,14 +310,12 @@
       return d3.scaleLinear().domain([state.start, state.end]).range([40, w]);
     }
 
-    function yForTrack(idx) {
-      const visible = state.tracks.filter(t => t.visible !== false);
-      const offset = visible.slice(0, idx).reduce((acc, t) => acc + (t.height || 60) + state.spacing, 40);
-      return offset;
+    function heightForTrack(track) {
+      return currentTrackHeights.get(track.id) || track.height || 60;
     }
 
     function totalHeight() {
-      return state.tracks.filter(t => t.visible !== false).reduce((acc, t) => acc + (t.height || 60) + state.spacing, 80);
+      return state.tracks.filter(t => t.visible !== false).reduce((acc, t) => acc + heightForTrack(t) + state.spacing, 80);
     }
 
     const corsProxies = [
@@ -435,18 +434,31 @@
     function renderTracks(sequence, genes) {
       const x = xScale();
       const visibleTracks = state.tracks.filter(t => t.visible !== false);
+      const geneLayouts = new Map();
+      currentTrackHeights = new Map();
+
+      visibleTracks.forEach(track => {
+        if (track.type === 'genes') {
+          const layout = layoutGeneRows(genes, track.height || 60);
+          geneLayouts.set(track.id, layout);
+          currentTrackHeights.set(track.id, layout.height);
+        } else {
+          currentTrackHeights.set(track.id, track.height || 60);
+        }
+      });
+
       svg.attr('height', totalHeight());
       gContainer.selectAll('*').remove();
       drawAxis(x);
       let yOffset = 40;
-      visibleTracks.forEach((track, idx) => {
+      visibleTracks.forEach((track) => {
         const g = gContainer.append('g').attr('transform', `translate(0, ${yOffset})`).attr('opacity', track.opacity ?? 1);
         if (track.type === 'variants') drawVariants(g, track, x);
-        else if (track.type === 'genes') drawGenesTrack(g, genes, x, track);
+        else if (track.type === 'genes') drawGenesTrack(g, geneLayouts.get(track.id), x, track);
         else if (track.type === 'coverage') drawCoverage(g, track, x);
         else if (track.type === 'sequence') drawSequenceTrack(g, sequence, x);
         else drawCustom(g, track, x);
-        yOffset += (track.height || 60) + state.spacing;
+        yOffset += heightForTrack(track) + state.spacing;
       });
       attachZoom();
     }
@@ -474,12 +486,33 @@
         .on('mouseleave', hideTooltip);
     }
 
-    function drawGenesTrack(g, genes, x, track) {
-      g.append('text').attr('x', 6).attr('y', -6).attr('fill', 'var(--muted)').text(track?.name || 'Genes');
-      const rows = genes.filter(d => d.start <= state.end && d.end >= state.start).slice(0, 60);
+    function layoutGeneRows(genes, baseHeight = 90) {
       const laneHeight = 18;
-      rows.forEach((gene, i) => {
-        const y = 4 + i * laneHeight;
+      const paddingTop = 6;
+      const paddingBottom = 10;
+      const visible = (genes || []).filter(d => d.start <= state.end && d.end >= state.start);
+      const rows = visible.slice(0, 120).sort((a, b) => (a.start - b.start) || (a.end - b.end));
+      const laneEnds = [];
+      const placed = rows.map(gene => {
+        let laneIndex = laneEnds.findIndex(end => gene.start > end);
+        if (laneIndex === -1) {
+          laneIndex = laneEnds.length;
+          laneEnds.push(gene.end);
+        } else {
+          laneEnds[laneIndex] = Math.max(laneEnds[laneIndex], gene.end);
+        }
+        return { ...gene, laneIndex };
+      });
+      const lanes = Math.max(laneEnds.length, 1);
+      const height = Math.max(baseHeight, lanes * laneHeight + paddingTop + paddingBottom);
+      return { rows: placed, height, laneHeight, paddingTop };
+    }
+
+    function drawGenesTrack(g, layout, x, track) {
+      g.append('text').attr('x', 6).attr('y', -6).attr('fill', 'var(--muted)').text(track?.name || 'Genes');
+      if (!layout) return;
+      layout.rows.forEach((gene) => {
+        const y = layout.paddingTop + gene.laneIndex * layout.laneHeight;
         g.append('rect').attr('x', x(gene.start)).attr('y', y).attr('height', 10).attr('width', Math.max(2, x(gene.end) - x(gene.start)))
           .attr('fill', '#60a5fa55').attr('stroke', '#60a5fa');
         gene.exons?.forEach(ex => {
