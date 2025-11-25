@@ -213,11 +213,13 @@
       BRCA1: { assembly: 'hg38', chrom: 'chr17', start: 43044294, end: 43125483 },
       TP53: { assembly: 'hg38', chrom: 'chr17', start: 7668402, end: 7687550 },
       EGFR: { assembly: 'hg38', chrom: 'chr7', start: 55086714, end: 55279321 },
-      WNT10B: { assembly: 'hg38', chrom: 'chr17', start: 43150836, end: 43169185 }
+      WNT10B: { assembly: 'hg38', chrom: 'chr12', start: 49317206, end: 49332809 }
     };
 
+    const resolvedAliasCache = new Map();
+
     const defaultTracks = () => ([
-      { id: 'genes', name: 'Gene models (refGene)', type: 'genes', color: '#60a5fa', height: 80, opacity: 1, visible: true, source: 'builtin', data: [] },
+      { id: 'refseq', name: 'RefSeq genes (hg38)', type: 'genes', color: '#60a5fa', height: 90, opacity: 1, visible: true, source: 'builtin', data: [] },
       { id: 'variants', name: 'Example variants', type: 'variants', color: '#f97316', height: 60, opacity: 1, visible: true, source: 'builtin', data: demoVariants() },
       { id: 'coverage', name: 'Coverage (demo)', type: 'coverage', color: '#22d3ee', height: 70, opacity: 0.9, visible: true, source: 'builtin', data: demoCoverage() },
       { id: 'sequence', name: 'Base sequence', type: 'sequence', color: '#fbbf24', height: 50, opacity: 1, visible: true, source: 'builtin', data: [] }
@@ -440,7 +442,7 @@
       visibleTracks.forEach((track, idx) => {
         const g = gContainer.append('g').attr('transform', `translate(0, ${yOffset})`).attr('opacity', track.opacity ?? 1);
         if (track.type === 'variants') drawVariants(g, track, x);
-        else if (track.type === 'genes') drawGenesTrack(g, genes, x);
+        else if (track.type === 'genes') drawGenesTrack(g, genes, x, track);
         else if (track.type === 'coverage') drawCoverage(g, track, x);
         else if (track.type === 'sequence') drawSequenceTrack(g, sequence, x);
         else drawCustom(g, track, x);
@@ -472,8 +474,8 @@
         .on('mouseleave', hideTooltip);
     }
 
-    function drawGenesTrack(g, genes, x) {
-      g.append('text').attr('x', 6).attr('y', -6).attr('fill', 'var(--muted)').text('Genes');
+    function drawGenesTrack(g, genes, x, track) {
+      g.append('text').attr('x', 6).attr('y', -6).attr('fill', 'var(--muted)').text(track?.name || 'Genes');
       const rows = genes.filter(d => d.start <= state.end && d.end >= state.start).slice(0, 60);
       const laneHeight = 18;
       rows.forEach((gene, i) => {
@@ -591,30 +593,54 @@
     async function parseSearch(value) {
       const trimmed = value.trim();
       if (!trimmed) return null;
+      const cacheHit = resolvedAliasCache.get(trimmed.toUpperCase());
+      if (cacheHit) return cacheHit;
       const alias = geneAliases[trimmed.toUpperCase()];
       if (alias) return alias;
       const match = trimmed.match(/^(chr\w+):(\d+)-(\d+)$/i);
       if (match) return { assembly: state.assembly, chrom: match[1], start: Number(match[2]), end: Number(match[3]) };
-      return await resolveGeneAlias(trimmed);
+      const resolved = await resolveGeneAlias(trimmed);
+      if (resolved) resolvedAliasCache.set(trimmed.toUpperCase(), resolved);
+      return resolved;
     }
 
     async function resolveGeneAlias(symbol) {
-      const url = `https://api.genome.ucsc.edu/getData/track?genome=${encodeURIComponent(state.assembly)};track=refGene;name=${encodeURIComponent(symbol)}`;
+      const assembly = state.assembly;
+      const searchUrl = `https://api.genome.ucsc.edu/getData/search?genome=${encodeURIComponent(assembly)};track=refGene;search=${encodeURIComponent(symbol)}`;
+      const nameUrl = `https://api.genome.ucsc.edu/getData/track?genome=${encodeURIComponent(assembly)};track=refGene;name=${encodeURIComponent(symbol)}`;
       try {
-        const json = await fetchJSON(url);
-        const rows = json?.refGene || json?.track?.refGene || [];
-        if (!Array.isArray(rows) || !rows.length) return null;
-        const best = rows.find(r => (r.name2 || r.name || '').toUpperCase() === symbol.toUpperCase()) || rows[0];
-        const chrom = best.chrom || best.chromosome;
-        const start = Number(best.txStart);
-        const end = Number(best.txEnd);
-        if (!chrom || !Number.isFinite(start) || !Number.isFinite(end)) return null;
-        const pad = Math.max(1000, Math.round((end - start) * 0.2));
-        return { assembly: state.assembly, chrom, start: Math.max(1, start - pad), end: end + pad };
+        const [searchJson, nameJson] = await Promise.all([
+          fetchJSON(searchUrl).catch(() => null),
+          fetchJSON(nameUrl).catch(() => null)
+        ]);
+        const hits = normalizeRefGeneRows(searchJson, symbol).concat(normalizeRefGeneRows(nameJson, symbol));
+        if (!hits.length) return null;
+        const best = hits[0];
+        const pad = Math.max(2000, Math.round((best.end - best.start) * 0.25));
+        return { assembly, chrom: best.chrom, start: Math.max(1, best.start - pad), end: best.end + pad };
       } catch (err) {
         console.warn('Gene alias lookup failed', err);
         return null;
       }
+    }
+
+    function normalizeRefGeneRows(json, symbol) {
+      const rows = json?.refGene || json?.track?.refGene || json?.results || json?.items || [];
+      if (!Array.isArray(rows)) return [];
+      const target = symbol.toUpperCase();
+      const sorted = rows.map(r => ({
+        chrom: r.chrom || r.chromosome,
+        start: Number(r.txStart ?? r.start ?? r.chromStart),
+        end: Number(r.txEnd ?? r.end ?? r.chromEnd),
+        name: r.name2 || r.name || r.gene || ''
+      })).filter(r => r.chrom && Number.isFinite(r.start) && Number.isFinite(r.end));
+      return sorted.sort((a, b) => {
+        const aExact = a.name.toUpperCase() === target;
+        const bExact = b.name.toUpperCase() === target;
+        if (aExact && !bExact) return -1;
+        if (!aExact && bExact) return 1;
+        return (b.end - b.start) - (a.end - a.start);
+      });
     }
 
     async function applySearch() {
