@@ -316,15 +316,38 @@
       return state.tracks.filter(t => t.visible !== false).reduce((acc, t) => acc + (t.height || 60) + state.spacing, 80);
     }
 
+    const corsProxies = [
+      url => `https://cors.isomorphic-git.org/${url}`,
+      url => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`
+    ];
+
     async function fetchJSON(url, timeoutMs = 8000) {
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), timeoutMs);
-      const res = await fetch(url, { signal: controller.signal });
-      clearTimeout(timer);
-      if (!res.ok) throw new Error('HTTP ' + res.status);
-      const json = await res.json();
-      if (!json || typeof json !== 'object') throw new Error('Invalid JSON');
-      return json;
+      const attempts = [url, ...corsProxies.map(fn => fn(url))].filter((candidate, idx, arr) =>
+        candidate && arr.indexOf(candidate) === idx
+      );
+      const errors = [];
+
+      for (const target of attempts) {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), timeoutMs);
+        try {
+          const res = await fetch(target, {
+            signal: controller.signal,
+            headers: { Accept: 'application/json' },
+            mode: 'cors'
+          });
+          clearTimeout(timer);
+          if (!res.ok) throw new Error('HTTP ' + res.status);
+          const json = await res.json();
+          if (!json || typeof json !== 'object') throw new Error('Invalid JSON');
+          return json;
+        } catch (err) {
+          clearTimeout(timer);
+          errors.push(`${target}: ${err?.message || err}`);
+        }
+      }
+
+      throw new Error('All fetch attempts failed. ' + errors.join(' | '));
     }
 
     async function fetchSequence() {
@@ -337,6 +360,7 @@
         return { sequence: seq, source: 'UCSC REST' };
       } catch (err) {
         console.warn('Sequence fetch failed', err);
+        setError('Sequence fetch failed, showing demo data.');
         const len = Math.min(20000, Math.max(200, end - start));
         return { sequence: demoSequence(len), source: 'demo' };
       }
@@ -359,6 +383,7 @@
         return genes;
       } catch (err) {
         console.warn('Gene fetch failed', err);
+        setError('Gene fetch failed, showing demo data.');
         return demoGenes();
       }
     }
@@ -440,8 +465,10 @@
         .on('mousemove', (event, d) => showTooltip(event, `${d.id || 'variant'} @ ${d.pos}`))
         .on('mouseleave', hideTooltip);
       g.selectAll('circle.variant').data(within).enter().append('circle')
-        .attr('cx', d => x(d.pos)).attr('cy', baseline - (d.value || 0.5) * 30)
-        .attr('r', 4).attr('fill', track.color).attr('stroke', '#000');
+        .attr('cx', d => x(d.pos)).attr('cy', d => baseline - (d.value || 0.5) * 30)
+        .attr('r', 4).attr('fill', track.color).attr('stroke', '#000')
+        .on('mousemove', (event, d) => showTooltip(event, `${d.id || 'variant'} @ ${d.pos}`))
+        .on('mouseleave', hideTooltip);
     }
 
     function drawGenesTrack(g, genes, x) {
