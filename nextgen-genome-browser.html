@@ -212,7 +212,8 @@
     const geneAliases = {
       BRCA1: { assembly: 'hg38', chrom: 'chr17', start: 43044294, end: 43125483 },
       TP53: { assembly: 'hg38', chrom: 'chr17', start: 7668402, end: 7687550 },
-      EGFR: { assembly: 'hg38', chrom: 'chr7', start: 55086714, end: 55279321 }
+      EGFR: { assembly: 'hg38', chrom: 'chr7', start: 55086714, end: 55279321 },
+      WNT10B: { assembly: 'hg38', chrom: 'chr17', start: 43150836, end: 43169185 }
     };
 
     const defaultTracks = () => ([
@@ -316,15 +317,38 @@
       return state.tracks.filter(t => t.visible !== false).reduce((acc, t) => acc + (t.height || 60) + state.spacing, 80);
     }
 
+    const corsProxies = [
+      url => `https://cors.isomorphic-git.org/${url}`,
+      url => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`
+    ];
+
     async function fetchJSON(url, timeoutMs = 8000) {
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), timeoutMs);
-      const res = await fetch(url, { signal: controller.signal });
-      clearTimeout(timer);
-      if (!res.ok) throw new Error('HTTP ' + res.status);
-      const json = await res.json();
-      if (!json || typeof json !== 'object') throw new Error('Invalid JSON');
-      return json;
+      const attempts = [url, ...corsProxies.map(fn => fn(url))].filter((candidate, idx, arr) =>
+        candidate && arr.indexOf(candidate) === idx
+      );
+      const errors = [];
+
+      for (const target of attempts) {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), timeoutMs);
+        try {
+          const res = await fetch(target, {
+            signal: controller.signal,
+            headers: { Accept: 'application/json' },
+            mode: 'cors'
+          });
+          clearTimeout(timer);
+          if (!res.ok) throw new Error('HTTP ' + res.status);
+          const json = await res.json();
+          if (!json || typeof json !== 'object') throw new Error('Invalid JSON');
+          return json;
+        } catch (err) {
+          clearTimeout(timer);
+          errors.push(`${target}: ${err?.message || err}`);
+        }
+      }
+
+      throw new Error('All fetch attempts failed. ' + errors.join(' | '));
     }
 
     async function fetchSequence() {
@@ -337,6 +361,7 @@
         return { sequence: seq, source: 'UCSC REST' };
       } catch (err) {
         console.warn('Sequence fetch failed', err);
+        setError('Sequence fetch failed, showing demo data.');
         const len = Math.min(20000, Math.max(200, end - start));
         return { sequence: demoSequence(len), source: 'demo' };
       }
@@ -359,6 +384,7 @@
         return genes;
       } catch (err) {
         console.warn('Gene fetch failed', err);
+        setError('Gene fetch failed, showing demo data.');
         return demoGenes();
       }
     }
@@ -440,8 +466,10 @@
         .on('mousemove', (event, d) => showTooltip(event, `${d.id || 'variant'} @ ${d.pos}`))
         .on('mouseleave', hideTooltip);
       g.selectAll('circle.variant').data(within).enter().append('circle')
-        .attr('cx', d => x(d.pos)).attr('cy', baseline - (d.value || 0.5) * 30)
-        .attr('r', 4).attr('fill', track.color).attr('stroke', '#000');
+        .attr('cx', d => x(d.pos)).attr('cy', d => baseline - (d.value || 0.5) * 30)
+        .attr('r', 4).attr('fill', track.color).attr('stroke', '#000')
+        .on('mousemove', (event, d) => showTooltip(event, `${d.id || 'variant'} @ ${d.pos}`))
+        .on('mouseleave', hideTooltip);
     }
 
     function drawGenesTrack(g, genes, x) {
@@ -560,18 +588,45 @@
       return `https://genome.ucsc.edu/cgi-bin/hgTracks?db=${encodeURIComponent(state.assembly)}&position=${encodeURIComponent(state.chrom)}:${state.start}-${state.end}`;
     }
 
-    function parseSearch(value) {
+    async function parseSearch(value) {
       const trimmed = value.trim();
       if (!trimmed) return null;
-      if (geneAliases[trimmed.toUpperCase()]) return geneAliases[trimmed.toUpperCase()];
+      const alias = geneAliases[trimmed.toUpperCase()];
+      if (alias) return alias;
       const match = trimmed.match(/^(chr\w+):(\d+)-(\d+)$/i);
       if (match) return { assembly: state.assembly, chrom: match[1], start: Number(match[2]), end: Number(match[3]) };
-      return null;
+      return await resolveGeneAlias(trimmed);
     }
 
-    function applySearch() {
-      const parsed = parseSearch(document.getElementById('search').value);
-      if (!parsed) { setError('Unrecognized query. Use gene alias or chr:start-end.'); return; }
+    async function resolveGeneAlias(symbol) {
+      const url = `https://api.genome.ucsc.edu/getData/track?genome=${encodeURIComponent(state.assembly)};track=refGene;name=${enc
+odeURIComponent(symbol)}`;
+      try {
+        const json = await fetchJSON(url);
+        const rows = json?.refGene || json?.track?.refGene || [];
+        if (!Array.isArray(rows) || !rows.length) return null;
+        const best = rows.find(r => (r.name2 || r.name || '').toUpperCase() === symbol.toUpperCase()) || rows[0];
+        const chrom = best.chrom || best.chromosome;
+        const start = Number(best.txStart);
+        const end = Number(best.txEnd);
+        if (!chrom || !Number.isFinite(start) || !Number.isFinite(end)) return null;
+        const pad = Math.max(1000, Math.round((end - start) * 0.2));
+        return { assembly: state.assembly, chrom, start: Math.max(1, start - pad), end: end + pad };
+      } catch (err) {
+        console.warn('Gene alias lookup failed', err);
+        return null;
+      }
+    }
+
+    async function applySearch() {
+      setError('');
+      setStatus('Searching...');
+      const parsed = await parseSearch(document.getElementById('search').value);
+      if (!parsed) {
+        setError('Unrecognized query. Use gene alias or chr:start-end.');
+        setStatus('Ready.');
+        return;
+      }
       state.assembly = parsed.assembly || state.assembly;
       state.chrom = parsed.chrom;
       state.start = parsed.start;
