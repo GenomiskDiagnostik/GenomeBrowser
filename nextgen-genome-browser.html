@@ -599,8 +599,7 @@
     }
 
     async function resolveGeneAlias(symbol) {
-      const url = `https://api.genome.ucsc.edu/getData/track?genome=${encodeURIComponent(state.assembly)};track=refGene;name=${enc
-odeURIComponent(symbol)}`;
+      const url = `https://api.genome.ucsc.edu/getData/track?genome=${encodeURIComponent(state.assembly)};track=refGene;name=${encodeURIComponent(symbol)}`;
       try {
         const json = await fetchJSON(url);
         const rows = json?.refGene || json?.track?.refGene || [];
