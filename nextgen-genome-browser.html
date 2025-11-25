@@ -465,8 +465,10 @@
         .on('mousemove', (event, d) => showTooltip(event, `${d.id || 'variant'} @ ${d.pos}`))
         .on('mouseleave', hideTooltip);
       g.selectAll('circle.variant').data(within).enter().append('circle')
-        .attr('cx', d => x(d.pos)).attr('cy', baseline - (d.value || 0.5) * 30)
-        .attr('r', 4).attr('fill', track.color).attr('stroke', '#000');
+        .attr('cx', d => x(d.pos)).attr('cy', d => baseline - (d.value || 0.5) * 30)
+        .attr('r', 4).attr('fill', track.color).attr('stroke', '#000')
+        .on('mousemove', (event, d) => showTooltip(event, `${d.id || 'variant'} @ ${d.pos}`))
+        .on('mouseleave', hideTooltip);
     }
 
     function drawGenesTrack(g, genes, x) {
